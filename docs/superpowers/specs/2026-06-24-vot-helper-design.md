@@ -54,6 +54,10 @@ upstream-reported delay, bounded to a safe interval. `--timeout <seconds>`
 changes the overall limit, and `--no-wait` returns the current status and
 translation identifier immediately.
 
+`--lively-voice` requests the upstream lively-voice option. It requires runtime
+credentials through `VOT_API_TOKEN` or `VOT_YANDEX_COOKIE`; the helper rejects
+the option with a configuration error when neither credential is available.
+
 Without `--output`, the command returns the translated audio URL and metadata.
 With `--output <path>`, it also downloads the audio. Existing files are rejected
 unless `--force` is present. Downloads use a temporary sibling file followed by
@@ -153,9 +157,11 @@ open Dependabot PRs; build or unit-test failures are not bypassed.
 
 ## Dependency automation
 
-Dependabot checks npm dependencies daily at 06:00 UTC and allows one open npm
-update PR at a time. Patch, minor, and major `@vot.js/node` updates all use the
-same automatic path.
+Dependabot checks `@vot.js/node` daily at 06:00 UTC and allows one open npm
+update PR at a time. Patch, minor, and major updates all use the same automatic
+path. Other npm development dependencies and GitHub Actions are kept outside
+this privileged auto-merge path so a toolchain change cannot masquerade as a
+VOT-only update.
 
 An update PR is eligible for automatic merge only when:
 

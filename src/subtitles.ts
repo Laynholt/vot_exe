@@ -27,40 +27,77 @@ function availableTrackDetails(tracks: readonly UpstreamSubtitleTrack[]) {
   };
 }
 
+function deduplicateCandidates(
+  candidates: readonly SelectedSubtitleTrack[],
+): SelectedSubtitleTrack[] {
+  const unique = new Map<string, SelectedSubtitleTrack>();
+  for (const candidate of candidates) {
+    const key = JSON.stringify([
+      candidate.kind,
+      candidate.language,
+      candidate.url,
+    ]);
+    if (!unique.has(key)) {
+      unique.set(key, candidate);
+    }
+  }
+  return [...unique.values()];
+}
+
+function isHttpUrl(value: string): boolean {
+  if (value.length === 0) {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function selectSubtitleTrack(
   tracks: readonly UpstreamSubtitleTrack[],
   options: SubtitleSelectionOptions,
 ): SelectedSubtitleTrack {
-  const candidates: SelectedSubtitleTrack[] = options.original
-    ? tracks
-        .filter(
-          (track) =>
-            options.sourceLang === "auto" ||
-            track.language === options.sourceLang,
-        )
-        .map((track) => ({
-          kind: "original",
-          language: track.language,
-          url: track.url,
-        }))
-    : tracks
-        .filter(
-          (track) =>
-            track.translatedLanguage === options.targetLang &&
-            typeof track.translatedUrl === "string" &&
-            track.translatedUrl.length > 0 &&
-            (options.sourceLang === "auto" ||
-              track.language === options.sourceLang),
-        )
-        .map((track) => ({
-          kind: "translated",
-          language: track.translatedLanguage!,
-          url: track.translatedUrl!,
-          translatedFromLanguage: track.language,
-        }));
+  const candidates = deduplicateCandidates(
+    options.original
+      ? tracks
+          .filter(
+            (track) =>
+              options.sourceLang === "auto" ||
+              track.language === options.sourceLang,
+          )
+          .map((track) => ({
+            kind: "original" as const,
+            language: track.language,
+            url: track.url,
+          }))
+      : tracks
+          .filter(
+            (track) =>
+              track.translatedLanguage === options.targetLang &&
+              typeof track.translatedUrl === "string" &&
+              track.translatedUrl.length > 0 &&
+              (options.sourceLang === "auto" ||
+                track.language === options.sourceLang),
+          )
+          .map((track) => ({
+            kind: "translated" as const,
+            language: track.translatedLanguage!,
+            url: track.translatedUrl!,
+            translatedFromLanguage: track.language,
+          })),
+  );
 
   if (candidates.length === 1) {
-    return candidates[0]!;
+    const candidate = candidates[0]!;
+    if (!isHttpUrl(candidate.url)) {
+      throw new AppError("subtitles", "Selected subtitle URL is invalid.", {
+        details: availableTrackDetails(tracks),
+      });
+    }
+    return candidate;
   }
 
   const details = availableTrackDetails(tracks);
@@ -95,8 +132,12 @@ function cueArray(input: unknown): unknown[] {
   throw new AppError("subtitles", "Invalid VOT subtitle payload.");
 }
 
-function normalizeNewlines(text: string): string {
-  return text.replace(/\r\n?/g, "\n");
+function normalizeCueText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").replace(/\n(?:[ \t]*\n)+/g, "\n");
+}
+
+function cueError(message: string, cueIndex: number): AppError {
+  return new AppError("subtitles", message, { details: { cueIndex } });
 }
 
 export function normalizeVotCues(input: unknown): SubtitleCue[] {
@@ -104,7 +145,7 @@ export function normalizeVotCues(input: unknown): SubtitleCue[] {
 
   for (const [originalIndex, value] of cueArray(input).entries()) {
     if (typeof value !== "object" || value === null) {
-      throw new AppError("subtitles", "Invalid VOT subtitle cue.");
+      throw cueError("Invalid VOT subtitle cue.", originalIndex);
     }
 
     const cue = value as {
@@ -113,24 +154,28 @@ export function normalizeVotCues(input: unknown): SubtitleCue[] {
       durationMs?: unknown;
     };
     if (typeof cue.text !== "string") {
-      throw new AppError("subtitles", "Invalid VOT subtitle cue text.");
+      throw cueError("Invalid VOT subtitle cue text.", originalIndex);
     }
     if (
       typeof cue.startMs !== "number" ||
-      !Number.isFinite(cue.startMs) ||
+      !Number.isSafeInteger(cue.startMs) ||
       cue.startMs < 0
     ) {
-      throw new AppError("subtitles", "Invalid VOT subtitle cue start time.");
+      throw cueError("Invalid VOT subtitle cue start time.", originalIndex);
     }
     if (
       typeof cue.durationMs !== "number" ||
-      !Number.isFinite(cue.durationMs) ||
+      !Number.isSafeInteger(cue.durationMs) ||
       cue.durationMs <= 0
     ) {
-      throw new AppError("subtitles", "Invalid VOT subtitle cue duration.");
+      throw cueError("Invalid VOT subtitle cue duration.", originalIndex);
+    }
+    const endMs = cue.startMs + cue.durationMs;
+    if (!Number.isSafeInteger(endMs) || endMs <= cue.startMs) {
+      throw cueError("Invalid VOT subtitle cue end time.", originalIndex);
     }
 
-    const text = normalizeNewlines(cue.text);
+    const text = normalizeCueText(cue.text);
     if (text.trim().length === 0) {
       continue;
     }
@@ -141,6 +186,13 @@ export function normalizeVotCues(input: unknown): SubtitleCue[] {
       durationMs: cue.durationMs,
       originalIndex,
     });
+  }
+
+  if (normalized.length === 0) {
+    throw new AppError(
+      "subtitles",
+      "VOT subtitle payload contained no nonblank cues.",
+    );
   }
 
   normalized.sort(
@@ -166,7 +218,7 @@ function timestamp(milliseconds: number, separator: "," | "."): string {
 }
 
 function cueText(text: string, escapeHtml: boolean): string {
-  const normalized = normalizeNewlines(text);
+  const normalized = normalizeCueText(text);
   const escaped = escapeHtml
     ? normalized
         .replace(/&/g, "&amp;")

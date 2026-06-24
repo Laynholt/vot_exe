@@ -110,6 +110,68 @@ describe("selectSubtitleTrack", () => {
     });
   });
 
+  test("deduplicates repeated original candidates with the same language and URL", () => {
+    expect(
+      selectSubtitleTrack(
+        [
+          tracks[0]!,
+          {
+            ...tracks[0]!,
+            translatedLanguage: "de",
+            translatedUrl: "https://example.com/translated-en-de",
+          },
+        ],
+        { original: true, sourceLang: "en", targetLang: "ru" },
+      ),
+    ).toEqual({
+      kind: "original",
+      language: "en",
+      url: "https://example.com/original-en",
+    });
+  });
+
+  test("deduplicates repeated translated candidates by kind, language, and URL", () => {
+    expect(
+      selectSubtitleTrack(
+        [tracks[0]!, { ...tracks[0]! }],
+        { original: false, sourceLang: "auto", targetLang: "ru" },
+      ),
+    ).toEqual({
+      kind: "translated",
+      language: "ru",
+      url: "https://example.com/translated-en-ru",
+      translatedFromLanguage: "en",
+    });
+  });
+
+  test.each([
+    [
+      "blank original URL",
+      [{ ...tracks[0]!, url: "" }],
+      { original: true, sourceLang: "en", targetLang: "ru" },
+    ],
+    [
+      "non-HTTP original URL",
+      [{ ...tracks[0]!, url: "ftp://example.com/original-en" }],
+      { original: true, sourceLang: "en", targetLang: "ru" },
+    ],
+    [
+      "blank translated URL",
+      [{ ...tracks[0]!, translatedUrl: "" }],
+      { original: false, sourceLang: "en", targetLang: "ru" },
+    ],
+    [
+      "non-HTTP translated URL",
+      [{ ...tracks[0]!, translatedUrl: "file:///private/subtitles" }],
+      { original: false, sourceLang: "en", targetLang: "ru" },
+    ],
+  ] as const)("rejects %s", (_label, candidateTracks, options) => {
+    const error = expectSubtitleError(() =>
+      selectSubtitleTrack(candidateTracks, options),
+    );
+    expect(JSON.stringify(error.details)).not.toContain("://");
+  });
+
   test("throws for no match with safe available-track details", () => {
     const error = expectSubtitleError(() =>
       selectSubtitleTrack(tracks, {
@@ -183,22 +245,75 @@ describe("normalizeVotCues", () => {
     ]);
   });
 
+  test("collapses consecutive cue-internal blank lines", () => {
+    const cues = normalizeVotCues([
+      { text: "line1\n\nline2", startMs: 0, durationMs: 1 },
+    ]);
+
+    expect(cues).toEqual([{ text: "line1\nline2", startMs: 0, durationMs: 1 }]);
+    expect(serializeSubtitles(cues, "srt")).toBe(
+      "1\r\n00:00:00,000 --> 00:00:00,001\r\nline1\r\nline2\r\n",
+    );
+  });
+
+  test("rejects payloads containing no nonblank cues", () => {
+    expectSubtitleError(() => normalizeVotCues([]));
+    expectSubtitleError(() =>
+      normalizeVotCues([
+        { text: " \r\n\t", startMs: 0, durationMs: 1 },
+        { text: "", startMs: 1, durationMs: 1 },
+      ]),
+    );
+  });
+
   test.each([
-    [null, "null payload"],
-    ["captions", "string payload"],
-    [{}, "object without subtitles"],
-    [{ subtitles: {} }, "non-array subtitles"],
-    [[null], "null cue"],
-    [[{ text: 42, startMs: 0, durationMs: 1 }], "non-string text"],
-    [[{ text: "x", startMs: -1, durationMs: 1 }], "negative start"],
-    [[{ text: "x", startMs: Number.NaN, durationMs: 1 }], "NaN start"],
-    [[{ text: "x", startMs: Number.POSITIVE_INFINITY, durationMs: 1 }], "infinite start"],
-    [[{ text: "x", startMs: 0, durationMs: 0 }], "zero duration"],
-    [[{ text: "x", startMs: 0, durationMs: -1 }], "negative duration"],
-    [[{ text: "x", startMs: 0, durationMs: Number.NaN }], "NaN duration"],
-    [[{ text: "x", startMs: 0, durationMs: Number.NEGATIVE_INFINITY }], "infinite duration"],
-  ] as const)("rejects invalid %s", (input) => {
+    ["null payload", null],
+    ["string payload", "captions"],
+    ["object without subtitles", {}],
+    ["non-array subtitles", { subtitles: {} }],
+  ] as const)("rejects %s", (_label, input) => {
     expectSubtitleError(() => normalizeVotCues(input));
+  });
+
+  test.each([
+    ["null cue", null],
+    ["non-string text", { text: 42, startMs: 0, durationMs: 1 }],
+    ["negative start", { text: "x", startMs: -1, durationMs: 1 }],
+    ["fractional start", { text: "x", startMs: 0.5, durationMs: 1 }],
+    ["NaN start", { text: "x", startMs: Number.NaN, durationMs: 1 }],
+    [
+      "infinite start",
+      { text: "x", startMs: Number.POSITIVE_INFINITY, durationMs: 1 },
+    ],
+    [
+      "unsafe start",
+      { text: "x", startMs: Number.MAX_SAFE_INTEGER + 1, durationMs: 1 },
+    ],
+    ["zero duration", { text: "x", startMs: 0, durationMs: 0 }],
+    ["negative duration", { text: "x", startMs: 0, durationMs: -1 }],
+    ["fractional duration", { text: "x", startMs: 0, durationMs: 1.5 }],
+    ["NaN duration", { text: "x", startMs: 0, durationMs: Number.NaN }],
+    [
+      "infinite duration",
+      { text: "x", startMs: 0, durationMs: Number.NEGATIVE_INFINITY },
+    ],
+    [
+      "unsafe duration",
+      { text: "x", startMs: 0, durationMs: Number.MAX_SAFE_INTEGER + 1 },
+    ],
+    [
+      "overflowing end",
+      { text: "x", startMs: Number.MAX_SAFE_INTEGER, durationMs: 1 },
+    ],
+  ] as const)("rejects %s with its cue index", (_label, invalidCue) => {
+    const error = expectSubtitleError(() =>
+      normalizeVotCues([
+        { text: "valid", startMs: 0, durationMs: 1 },
+        invalidCue,
+      ]),
+    );
+
+    expect(error.details).toEqual({ cueIndex: 1 });
   });
 });
 
@@ -236,7 +351,7 @@ describe("serializeSubtitles", () => {
 
   test("serializes deterministic pretty JSON with a newline and no timing loss", () => {
     const cues = [
-      { text: "Precise", startMs: 0.25, durationMs: 1.5 },
+      { text: "Precise", startMs: 3_723_004, durationMs: 1_996 },
       { text: "Later", startMs: 2, durationMs: 3 },
     ];
 

@@ -7,7 +7,6 @@ import {
   readdir,
   rename,
   rm,
-  rmdir,
   stat,
   unlink,
   writeFile,
@@ -37,91 +36,54 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 function realFileOps(): AtomicFinalizeFileOps {
-  return { link, lstat, rename, rmdir, stat, unlink };
+  return { link, lstat, rename, stat, unlink };
 }
 
 describe("finalizeStagedFile", () => {
-  test("uses one atomic overwrite rename for forced replacement off Windows", async () => {
+  test("replaces an existing file with one real rename on the current host", async () => {
     const root = await temporaryDirectory();
     const destination = join(root, "output.bin");
     const staged = join(root, ".output.bin.tmp-test");
     await writeFile(destination, "original");
     await writeFile(staged, "replacement");
-    const calls: string[] = [];
-    const real = realFileOps();
-    const fileOps: AtomicFinalizeFileOps = {
-      ...real,
-      async link() {
-        throw new Error("non-Windows forced replacement must not create a link");
-      },
-      async rename(from, to) {
-        calls.push(`rename:${from}->${to}`);
-        await real.rename(from, to);
-      },
-      async unlink(path) {
-        calls.push(`unlink:${path}`);
-        await real.unlink(path);
-      },
-    };
 
-    await finalizeStagedFile(staged, destination, true, {
-      platform: "linux",
-      fileOps,
-    });
+    await finalizeStagedFile(staged, destination, true);
 
-    expect(calls).toEqual([`rename:${staged}->${destination}`]);
     expect(await readFile(destination, "utf8")).toBe("replacement");
     expect(await readdir(root)).toEqual(["output.bin"]);
   });
 
-  test("restores the original after Windows install fails post-backup", async () => {
+  test("keeps the original and removes staging when overwrite rename fails", async () => {
     const root = await temporaryDirectory();
     const destination = join(root, "output.bin");
     const staged = join(root, ".output.bin.tmp-test");
     await writeFile(destination, "original");
     await writeFile(staged, "replacement");
     const real = realFileOps();
-    let installAttemptedAfterBackup = false;
-    let destinationMissingDuringInstall = false;
-    let backupContainsOriginal = false;
+    const renameCalls: string[] = [];
+    let originalPresentAtFailure = false;
     const fileOps: AtomicFinalizeFileOps = {
       ...real,
       async rename(from, to) {
+        renameCalls.push(`${from}->${to}`);
         if (from === staged && to === destination) {
-          const siblings = await readdir(root);
-          const backupName = siblings.find((name) =>
-            name.startsWith(".output.bin.backup-"),
-          );
-          installAttemptedAfterBackup = backupName !== undefined;
-          if (backupName !== undefined) {
-            backupContainsOriginal =
-              (await readFile(join(root, backupName), "utf8")) === "original";
-          }
-          try {
-            await real.lstat(destination);
-          } catch (error) {
-            destinationMissingDuringInstall =
-              (error as NodeJS.ErrnoException).code === "ENOENT";
-          }
-          throw new Error("injected install failure");
+          originalPresentAtFailure =
+            (await readFile(destination, "utf8")) === "original";
+          throw new Error("injected rename failure");
         }
         await real.rename(from, to);
       },
     };
 
     try {
-      await finalizeStagedFile(staged, destination, true, {
-        platform: "win32",
-        fileOps,
-      });
+      await finalizeStagedFile(staged, destination, true, fileOps);
       throw new Error("Expected finalization to reject");
     } catch (error) {
-      expect((error as Error).message).toBe("injected install failure");
+      expect((error as Error).message).toBe("injected rename failure");
     }
 
-    expect(installAttemptedAfterBackup).toBe(true);
-    expect(destinationMissingDuringInstall).toBe(true);
-    expect(backupContainsOriginal).toBe(true);
+    expect(renameCalls).toEqual([`${staged}->${destination}`]);
+    expect(originalPresentAtFailure).toBe(true);
     expect(await readFile(destination, "utf8")).toBe("original");
     expect(await readdir(root)).toEqual(["output.bin"]);
   });

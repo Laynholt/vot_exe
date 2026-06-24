@@ -5,7 +5,6 @@ import {
   lstat,
   open,
   rename,
-  rmdir,
   stat,
   unlink,
   type FileHandle,
@@ -31,21 +30,18 @@ export interface AtomicFinalizeFileOps {
   link(from: string, to: string): Promise<void>;
   lstat(path: string): Promise<Stats>;
   rename(from: string, to: string): Promise<void>;
-  rmdir(path: string): Promise<void>;
   stat(path: string): Promise<Stats>;
   unlink(path: string): Promise<void>;
 }
 
-export interface AtomicFinalizeDependencies {
-  platform: NodeJS.Platform;
-  fileOps: AtomicFinalizeFileOps;
-}
-
 type DestinationKind = "missing" | "file" | "directory";
 
-const nodeFinalizeDependencies: AtomicFinalizeDependencies = {
-  platform: process.platform,
-  fileOps: { link, lstat, rename, rmdir, stat, unlink },
+const nodeFinalizeFileOps: AtomicFinalizeFileOps = {
+  link,
+  lstat,
+  rename,
+  stat,
+  unlink,
 };
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -63,7 +59,7 @@ function fileError(message: string, cause?: unknown): AppError {
 
 async function destinationKind(
   path: string,
-  fileOps: AtomicFinalizeFileOps = nodeFinalizeDependencies.fileOps,
+  fileOps: AtomicFinalizeFileOps = nodeFinalizeFileOps,
 ): Promise<DestinationKind> {
   let entry;
   try {
@@ -128,16 +124,16 @@ async function validateDestination(
   }
 }
 
-function siblingPath(destination: string, role: "tmp" | "backup"): string {
+function temporarySiblingPath(destination: string): string {
   return join(
     dirname(destination),
-    `.${basename(destination)}.${role}-${randomUUID()}`,
+    `.${basename(destination)}.tmp-${randomUUID()}`,
   );
 }
 
 async function createStagedFile(destination: string): Promise<StagedFile> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const path = siblingPath(destination, "tmp");
+    const path = temporarySiblingPath(destination);
     try {
       return { path, handle: await open(path, "wx", 0o600) };
     } catch (error) {
@@ -178,79 +174,12 @@ async function readDownloadChunk(
   }
 }
 
-async function moveToBackup(
-  destination: string,
-  fileOps: AtomicFinalizeFileOps,
-): Promise<string> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const backup = siblingPath(destination, "backup");
-    try {
-      await fileOps.rename(destination, backup);
-      return backup;
-    } catch (error) {
-      if (!hasErrorCode(error, "EEXIST")) {
-        throw error;
-      }
-    }
-  }
-
-  throw new Error("Could not allocate a unique backup file.");
-}
-
-async function removeRollbackObstacle(
-  path: string,
-  fileOps: AtomicFinalizeFileOps,
-): Promise<void> {
-  let entry;
-  try {
-    entry = await fileOps.lstat(path);
-  } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) {
-      return;
-    }
-    throw error;
-  }
-
-  if (entry.isDirectory()) {
-    await fileOps.rmdir(path);
-  } else {
-    await fileOps.unlink(path);
-  }
-}
-
-async function replaceExistingOnWindows(
-  stagedPath: string,
-  destination: string,
-  fileOps: AtomicFinalizeFileOps,
-): Promise<void> {
-  const backup = await moveToBackup(destination, fileOps);
-
-  try {
-    await fileOps.rename(stagedPath, destination);
-    await fileOps.unlink(backup);
-  } catch (error) {
-    try {
-      await removeRollbackObstacle(destination, fileOps);
-      await fileOps.rename(backup, destination);
-    } catch (rollbackError) {
-      throw new AggregateError(
-        [error, rollbackError],
-        "Could not restore the original output file.",
-      );
-    }
-
-    throw error;
-  }
-}
-
 export async function finalizeStagedFile(
   stagedPath: string,
   destination: string,
   force: boolean,
-  dependencies: AtomicFinalizeDependencies = nodeFinalizeDependencies,
+  fileOps: AtomicFinalizeFileOps = nodeFinalizeFileOps,
 ): Promise<void> {
-  const { fileOps, platform } = dependencies;
-
   try {
     const kind = await destinationKind(destination, fileOps);
     if (kind === "directory") {
@@ -282,12 +211,7 @@ export async function finalizeStagedFile(
       return;
     }
 
-    if (kind === "missing" || platform !== "win32") {
-      await fileOps.rename(stagedPath, destination);
-      return;
-    }
-
-    await replaceExistingOnWindows(stagedPath, destination, fileOps);
+    await fileOps.rename(stagedPath, destination);
   } catch (error) {
     try {
       await fileOps.unlink(stagedPath);
@@ -297,6 +221,19 @@ export async function finalizeStagedFile(
       }
     }
     throw error;
+  }
+}
+
+async function cancelUnlockedBody(
+  body: ReadableStream<Uint8Array> | null,
+): Promise<void> {
+  if (body === null || body.locked) {
+    return;
+  }
+  try {
+    await body.cancel();
+  } catch {
+    // Preserve the operation error that required disposal.
   }
 }
 
@@ -373,6 +310,7 @@ export async function downloadAtomic(
   }
 
   if (!response.ok) {
+    await cancelUnlockedBody(response.body);
     throw new AppError(
       "download",
       `Download failed with HTTP status ${response.status}.`,
@@ -382,36 +320,44 @@ export async function downloadAtomic(
     throw new AppError("download", "Download response had no body.");
   }
 
-  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  const body = response.body;
+  let bytes: number;
   try {
-    reader = response.body.getReader();
-  } catch (error) {
-    throw new AppError("download", "Download response body was unavailable.", {
-      cause: error,
-    });
-  }
-  const bytes = await withStagedFile(destination, options.force, async (handle) => {
-    let count = 0;
-    try {
-      while (true) {
-        const readResult = await readDownloadChunk(reader);
-
-        if (readResult.done) {
-          return count;
-        }
-        count += await writeAll(handle, readResult.value);
-      }
-    } catch (error) {
+    bytes = await withStagedFile(destination, options.force, async (handle) => {
+      let reader: ReadableStreamDefaultReader<Uint8Array>;
       try {
-        await reader.cancel();
-      } catch {
-        // Preserve the read or file-write error.
+        reader = body.getReader();
+      } catch (error) {
+        throw new AppError("download", "Download response body was unavailable.", {
+          cause: error,
+        });
       }
-      throw error;
-    } finally {
-      reader.releaseLock();
-    }
-  });
+
+      let count = 0;
+      try {
+        while (true) {
+          const readResult = await readDownloadChunk(reader);
+
+          if (readResult.done) {
+            return count;
+          }
+          count += await writeAll(handle, readResult.value);
+        }
+      } catch (error) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Preserve the read or file-write error.
+        }
+        throw error;
+      } finally {
+        reader.releaseLock();
+      }
+    });
+  } catch (error) {
+    await cancelUnlockedBody(body);
+    throw error;
+  }
 
   const contentType = response.headers.get("content-type");
   return {

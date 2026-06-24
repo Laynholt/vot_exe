@@ -92,11 +92,7 @@ async function expectNoStagingFiles(
 ): Promise<void> {
   const siblings = await readdir(directory);
   expect(
-    siblings.filter(
-      (name) =>
-        name.startsWith(`.${outputName}.tmp-`) ||
-        name.startsWith(`.${outputName}.backup-`),
-    ),
+    siblings.filter((name) => name.startsWith(`.${outputName}.tmp-`)),
   ).toEqual([]);
 }
 
@@ -216,6 +212,35 @@ describe("downloadAtomic", () => {
     expect(await readdir(root)).toEqual([]);
   });
 
+  test("cancels and unlocks a non-2xx response body", async () => {
+    const root = await temporaryDirectory();
+    const output = join(root, "rejected.bin");
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        // Keep the response open until downloadAtomic disposes it.
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchFn = injectedFetch(
+      async () => new Response(body, { status: 503 }),
+    );
+
+    await expectAppError(
+      downloadAtomic("https://example.invalid/rejected", output, {
+        force: false,
+        fetchFn,
+      }),
+      "download",
+    );
+
+    expect(cancelled).toBe(true);
+    expect(body.locked).toBe(false);
+    expect(await readdir(root)).toEqual([]);
+  });
+
   test("maps a null response body to a download error", async () => {
     const root = await temporaryDirectory();
     const output = join(root, "empty.bin");
@@ -275,6 +300,38 @@ describe("downloadAtomic", () => {
     );
 
     expect(error.message).not.toContain("secret-value");
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  test("cancels an unlocked body when staging creation fails after fetch", async () => {
+    const root = await temporaryDirectory();
+    const parent = join(root, "output");
+    await mkdir(parent);
+    const output = join(parent, "audio.bin");
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        // Keep the response open until downloadAtomic disposes it.
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchFn = injectedFetch(async () => {
+      await rm(parent, { recursive: true, force: true });
+      return new Response(body);
+    });
+
+    await expectAppError(
+      downloadAtomic("https://example.invalid/audio", output, {
+        force: false,
+        fetchFn,
+      }),
+      "fileIO",
+    );
+
+    expect(cancelled).toBe(true);
+    expect(body.locked).toBe(false);
     expect(await readdir(root)).toEqual([]);
   });
 

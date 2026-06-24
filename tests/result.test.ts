@@ -173,6 +173,19 @@ describe("result envelopes", () => {
     expect(serializeEnvelope(envelope).endsWith("\n\n")).toBe(false);
   });
 
+  test("preserves success payload strings byte-for-byte", () => {
+    const diagnostic = "Bearer is nonsecret application data here";
+    const envelope = successEnvelope({
+      ...context,
+      data: { diagnostic },
+    });
+
+    expect(envelope.data).toEqual({ diagnostic });
+    expect(serializeEnvelope(envelope)).toContain(
+      `"diagnostic":${JSON.stringify(diagnostic)}`,
+    );
+  });
+
   test("normalizes BigInt success data before serialization", () => {
     const envelope = successEnvelope({
       ...context,

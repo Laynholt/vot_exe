@@ -76,7 +76,7 @@ export function successEnvelope(input: SuccessEnvelopeInput): SuccessEnvelope {
     operation: input.operation,
     helperVersion: input.helperVersion,
     votVersion: input.votVersion,
-    data: redactSecrets(input.data),
+    data: normalizeJsonValue(input.data),
   };
 }
 
@@ -90,10 +90,11 @@ function redactString(value: string): string {
 function sanitizeValue(
   value: unknown,
   ancestors: WeakSet<object>,
+  redactStringValues: boolean,
 ): JsonValue | undefined {
   switch (typeof value) {
     case "string":
-      return redactString(value);
+      return redactStringValues ? redactString(value) : value;
     case "number":
       return Number.isFinite(value) ? value : null;
     case "boolean":
@@ -143,7 +144,11 @@ function sanitizeValue(
             result.push(UNSERIALIZABLE_PROPERTY);
           } else {
             result.push(
-              sanitizeValue(descriptor.value, ancestors) ?? null,
+              sanitizeValue(
+                descriptor.value,
+                ancestors,
+                redactStringValues,
+              ) ?? null,
             );
           }
         }
@@ -167,7 +172,11 @@ function sanitizeValue(
           continue;
         }
 
-        const sanitized = sanitizeValue(descriptor.value, ancestors);
+        const sanitized = sanitizeValue(
+          descriptor.value,
+          ancestors,
+          redactStringValues,
+        );
         if (sanitized !== undefined) {
           result[key] = sanitized;
         }
@@ -182,8 +191,12 @@ function sanitizeValue(
   }
 }
 
+function normalizeJsonValue(value: unknown): JsonValue {
+  return sanitizeValue(value, new WeakSet(), false) ?? null;
+}
+
 export function redactSecrets(value: unknown): JsonValue {
-  return sanitizeValue(value, new WeakSet()) ?? null;
+  return sanitizeValue(value, new WeakSet(), true) ?? null;
 }
 
 function makeErrorEnvelope(

@@ -9,10 +9,10 @@ import {
 export const HELP_TEXT = `vot-helper translates video audio and retrieves subtitles.
 
 Usage:
-  vot translate --url <http(s)-url> [options]
-  vot subtitles --url <http(s)-url> [options]
-  vot --help | vot help
-  vot --version | vot version
+  vot-helper.exe translate --url <http(s)-url> [options]
+  vot-helper.exe subtitles --url <http(s)-url> [options]
+  vot-helper.exe --help | vot-helper.exe help
+  vot-helper.exe --version | vot-helper.exe version
 
 Commands:
   translate   Create or retrieve a translated audio track.

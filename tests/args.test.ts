@@ -189,10 +189,31 @@ describe("parseArgs", () => {
     );
   });
 
+  test("rejects translate --format", () => {
+    expectArgumentError(
+      ["translate", "--url", "https://example.com", "--format", "vtt"],
+      "Option --format is not valid for translate.",
+    );
+  });
+
   test("rejects a translate-only flag for subtitles", () => {
     expectArgumentError(
       ["subtitles", "--url", "https://example.com", "--no-wait"],
       "Option --no-wait is not valid for subtitles.",
+    );
+  });
+
+  test("rejects subtitles --timeout", () => {
+    expectArgumentError(
+      ["subtitles", "--url", "https://example.com", "--timeout", "30"],
+      "Option --timeout is not valid for subtitles.",
+    );
+  });
+
+  test("rejects subtitles --lively-voice", () => {
+    expectArgumentError(
+      ["subtitles", "--url", "https://example.com", "--lively-voice"],
+      "Option --lively-voice is not valid for subtitles.",
     );
   });
 
@@ -202,6 +223,17 @@ describe("parseArgs", () => {
 });
 
 describe("HELP_TEXT", () => {
+  test("names vot-helper.exe in every usage form", () => {
+    expect(HELP_TEXT).toContain(
+      "vot-helper.exe translate --url <http(s)-url> [options]",
+    );
+    expect(HELP_TEXT).toContain(
+      "vot-helper.exe subtitles --url <http(s)-url> [options]",
+    );
+    expect(HELP_TEXT).toContain("vot-helper.exe --help | vot-helper.exe help");
+    expect(HELP_TEXT).toContain("vot-helper.exe --version | vot-helper.exe version");
+  });
+
   test("documents commands, defaults, flags, streams, and environment", () => {
     for (const text of [
       "translate",

@@ -216,6 +216,90 @@ describe("result envelopes", () => {
       },
     });
   });
+
+  test("ignores enumerable toJSON methods instead of invoking or preserving them", () => {
+    let toJSONCalls = 0;
+    const normalized = normalizeError(
+      new AppError("translation", "Translation failed.", {
+        details: {
+          provider: "vot",
+          toJSON() {
+            toJSONCalls += 1;
+            return { authorization: "Bearer leaked-token" };
+          },
+        },
+      }),
+      context,
+    );
+
+    const serialized = serializeEnvelope(normalized.envelope);
+
+    expect(toJSONCalls).toBe(0);
+    expect(normalized.envelope.error.details).toEqual({ provider: "vot" });
+    expect(serialized).not.toContain("leaked-token");
+    expect(serialized).not.toContain("toJSON");
+  });
+
+  test("marks circular details without throwing", () => {
+    const details: { label: string; self?: unknown } = { label: "root" };
+    details.self = details;
+
+    const normalized = normalizeError(
+      new AppError("unexpected", "Cycle found.", { details }),
+      context,
+    );
+
+    expect(normalized.envelope.error.details).toEqual({
+      label: "root",
+      self: "[Circular]",
+    });
+    expect(() => serializeEnvelope(normalized.envelope)).not.toThrow();
+  });
+
+  test("marks throwing getters without executing them", () => {
+    let getterCalls = 0;
+    const details = { safe: "value" } as Record<string, unknown>;
+    Object.defineProperty(details, "dangerous", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error("Bearer getter-secret");
+      },
+    });
+
+    const normalized = normalizeError(
+      new AppError("fileIO", "Could not inspect details.", { details }),
+      context,
+    );
+
+    expect(getterCalls).toBe(0);
+    expect(normalized.envelope.error.details).toEqual({
+      safe: "value",
+      dangerous: "[Unserializable property]",
+    });
+    expect(() => serializeEnvelope(normalized.envelope)).not.toThrow();
+  });
+
+  test("converts BigInt and Date details to stable JSON values", () => {
+    const normalized = normalizeError(
+      new AppError("videoData", "Video metadata failed.", {
+        details: {
+          contentLength: 9_007_199_254_740_993n,
+          fetchedAt: new Date("2026-06-24T12:34:56.789Z"),
+        },
+      }),
+      context,
+    );
+
+    expect(normalized.envelope.error.details).toEqual({
+      contentLength: "9007199254740993",
+      fetchedAt: "2026-06-24T12:34:56.789Z",
+    });
+    expect(() => serializeEnvelope(normalized.envelope)).not.toThrow();
+    expect(serializeEnvelope(normalized.envelope)).toContain(
+      '"contentLength":"9007199254740993","fetchedAt":"2026-06-24T12:34:56.789Z"',
+    );
+  });
 });
 
 describe("redactSecrets", () => {

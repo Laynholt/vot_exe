@@ -29,10 +29,18 @@ export interface SuccessEnvelope<T> {
   data: T;
 }
 
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
 export interface ErrorPayload {
   code: AppErrorCode;
   message: string;
-  details?: unknown;
+  details?: JsonValue;
 }
 
 export interface ErrorEnvelope {
@@ -52,6 +60,8 @@ export interface NormalizedError {
 }
 
 const UNEXPECTED_MESSAGE = "An unexpected error occurred.";
+const CIRCULAR_VALUE = "[Circular]";
+const UNSERIALIZABLE_PROPERTY = "[Unserializable property]";
 const SECRET_VALUE = "$1[REDACTED]";
 const SECRET_PATTERNS = [
   /\b((?:OAuth|Bearer)\s+)[^\s,;]+/gi,
@@ -79,22 +89,103 @@ function redactString(value: string): string {
   );
 }
 
-export function redactSecrets<T>(value: T): T {
-  if (typeof value === "string") {
-    return redactString(value) as T;
+function sanitizeValue(
+  value: unknown,
+  ancestors: WeakSet<object>,
+): JsonValue | undefined {
+  switch (typeof value) {
+    case "string":
+      return redactString(value);
+    case "number":
+      return Number.isFinite(value) ? value : null;
+    case "boolean":
+      return value;
+    case "bigint":
+      return value.toString(10);
+    case "undefined":
+    case "function":
+    case "symbol":
+      return undefined;
+    case "object":
+      break;
   }
 
-  if (Array.isArray(value)) {
-    return value.map((item) => redactSecrets(item)) as T;
+  if (value === null) {
+    return null;
   }
 
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, redactSecrets(item)]),
-    ) as T;
-  }
+  try {
+    if (value instanceof Date) {
+      return Date.prototype.toISOString.call(value);
+    }
 
-  return value;
+    if (ancestors.has(value)) {
+      return CIRCULAR_VALUE;
+    }
+
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    ancestors.add(value);
+
+    try {
+      if (Array.isArray(value)) {
+        const lengthDescriptor = descriptors.length;
+        const length =
+          lengthDescriptor !== undefined &&
+          "value" in lengthDescriptor &&
+          typeof lengthDescriptor.value === "number"
+            ? lengthDescriptor.value
+            : 0;
+        const result: JsonValue[] = [];
+
+        for (let index = 0; index < length; index += 1) {
+          const descriptor = descriptors[String(index)];
+          if (descriptor === undefined) {
+            result.push(null);
+          } else if (!("value" in descriptor)) {
+            result.push(UNSERIALIZABLE_PROPERTY);
+          } else {
+            result.push(
+              sanitizeValue(descriptor.value, ancestors) ?? null,
+            );
+          }
+        }
+
+        return result;
+      }
+
+      const result: { [key: string]: JsonValue } = {};
+      for (const key of Object.keys(descriptors)) {
+        const descriptor = descriptors[key];
+        if (
+          descriptor === undefined ||
+          !descriptor.enumerable ||
+          key === "toJSON"
+        ) {
+          continue;
+        }
+
+        if (!("value" in descriptor)) {
+          result[key] = UNSERIALIZABLE_PROPERTY;
+          continue;
+        }
+
+        const sanitized = sanitizeValue(descriptor.value, ancestors);
+        if (sanitized !== undefined) {
+          result[key] = sanitized;
+        }
+      }
+
+      return result;
+    } finally {
+      ancestors.delete(value);
+    }
+  } catch {
+    return UNSERIALIZABLE_PROPERTY;
+  }
+}
+
+export function redactSecrets(value: unknown): JsonValue {
+  return sanitizeValue(value, new WeakSet()) ?? null;
 }
 
 function makeErrorEnvelope(
@@ -120,7 +211,7 @@ export function normalizeError(
   if (error instanceof AppError) {
     const payload: ErrorPayload = {
       code: error.code,
-      message: redactSecrets(error.message),
+      message: redactString(error.message),
       ...(error.details === undefined
         ? {}
         : { details: redactSecrets(error.details) }),

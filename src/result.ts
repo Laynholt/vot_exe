@@ -7,11 +7,11 @@ import {
 
 export { AppError, EXIT_CODES } from "./contracts";
 
-export interface SuccessEnvelopeInput<T> {
+export interface SuccessEnvelopeInput {
   operation: string;
   helperVersion: string;
   votVersion: string;
-  data: T;
+  data: unknown;
 }
 
 export interface ErrorEnvelopeContext {
@@ -20,13 +20,13 @@ export interface ErrorEnvelopeContext {
   votVersion: string;
 }
 
-export interface SuccessEnvelope<T> {
+export interface SuccessEnvelope {
   schemaVersion: 1;
   ok: true;
   operation: string;
   helperVersion: string;
   votVersion: string;
-  data: T;
+  data: JsonValue;
 }
 
 export type JsonValue =
@@ -52,7 +52,7 @@ export interface ErrorEnvelope {
   error: ErrorPayload;
 }
 
-export type ResultEnvelope<T = unknown> = SuccessEnvelope<T> | ErrorEnvelope;
+export type ResultEnvelope = SuccessEnvelope | ErrorEnvelope;
 
 export interface NormalizedError {
   exitCode: AppExitCode;
@@ -69,16 +69,14 @@ const SECRET_PATTERNS = [
   /\b(Session_id\s*=\s*)[^\s,;]+/gi,
 ] as const;
 
-export function successEnvelope<T>(
-  input: SuccessEnvelopeInput<T>,
-): SuccessEnvelope<T> {
+export function successEnvelope(input: SuccessEnvelopeInput): SuccessEnvelope {
   return {
     schemaVersion: 1,
     ok: true,
     operation: input.operation,
     helperVersion: input.helperVersion,
     votVersion: input.votVersion,
-    data: input.data,
+    data: redactSecrets(input.data),
   };
 }
 

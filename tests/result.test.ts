@@ -173,15 +173,44 @@ describe("result envelopes", () => {
     expect(serializeEnvelope(envelope).endsWith("\n\n")).toBe(false);
   });
 
-  test("does not rewrite success data while serializing", () => {
+  test("normalizes BigInt success data before serialization", () => {
     const envelope = successEnvelope({
       ...context,
-      data: { diagnostic: "Bearer is nonsecret application data here" },
+      data: { contentLength: 9_007_199_254_740_993n },
     });
 
-    expect(serializeEnvelope(envelope)).toContain(
-      '"diagnostic":"Bearer is nonsecret application data here"',
-    );
+    expect(envelope.data).toEqual({ contentLength: "9007199254740993" });
+    expect(() => serializeEnvelope(envelope)).not.toThrow();
+  });
+
+  test("marks circular success data before serialization", () => {
+    const data: { label: string; self?: unknown } = { label: "root" };
+    data.self = data;
+
+    const envelope = successEnvelope({ ...context, data });
+
+    expect(envelope.data).toEqual({ label: "root", self: "[Circular]" });
+    expect(() => serializeEnvelope(envelope)).not.toThrow();
+  });
+
+  test("ignores hostile success toJSON methods without leaking secrets", () => {
+    let toJSONCalls = 0;
+    const envelope = successEnvelope({
+      ...context,
+      data: {
+        safe: "value",
+        toJSON() {
+          toJSONCalls += 1;
+          return { authorization: "Bearer leaked-token" };
+        },
+      },
+    });
+
+    const serialized = serializeEnvelope(envelope);
+
+    expect(toJSONCalls).toBe(0);
+    expect(envelope.data).toEqual({ safe: "value" });
+    expect(serialized).not.toContain("leaked-token");
   });
 
   test("redacts secrets recursively in messages and nested details", () => {

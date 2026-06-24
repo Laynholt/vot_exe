@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
 import {
   link,
   lstat,
@@ -26,7 +27,26 @@ interface StagedFile {
   path: string;
 }
 
+export interface AtomicFinalizeFileOps {
+  link(from: string, to: string): Promise<void>;
+  lstat(path: string): Promise<Stats>;
+  rename(from: string, to: string): Promise<void>;
+  rmdir(path: string): Promise<void>;
+  stat(path: string): Promise<Stats>;
+  unlink(path: string): Promise<void>;
+}
+
+export interface AtomicFinalizeDependencies {
+  platform: NodeJS.Platform;
+  fileOps: AtomicFinalizeFileOps;
+}
+
 type DestinationKind = "missing" | "file" | "directory";
+
+const nodeFinalizeDependencies: AtomicFinalizeDependencies = {
+  platform: process.platform,
+  fileOps: { link, lstat, rename, rmdir, stat, unlink },
+};
 
 function hasErrorCode(error: unknown, code: string): boolean {
   return (
@@ -41,10 +61,13 @@ function fileError(message: string, cause?: unknown): AppError {
   return new AppError("fileIO", message, { cause });
 }
 
-async function destinationKind(path: string): Promise<DestinationKind> {
+async function destinationKind(
+  path: string,
+  fileOps: AtomicFinalizeFileOps = nodeFinalizeDependencies.fileOps,
+): Promise<DestinationKind> {
   let entry;
   try {
-    entry = await lstat(path);
+    entry = await fileOps.lstat(path);
   } catch (error) {
     if (hasErrorCode(error, "ENOENT")) {
       return "missing";
@@ -58,7 +81,7 @@ async function destinationKind(path: string): Promise<DestinationKind> {
 
   if (entry.isSymbolicLink()) {
     try {
-      if ((await stat(path)).isDirectory()) {
+      if ((await fileOps.stat(path)).isDirectory()) {
         return "directory";
       }
     } catch (error) {
@@ -155,11 +178,14 @@ async function readDownloadChunk(
   }
 }
 
-async function createBackup(destination: string): Promise<string> {
+async function moveToBackup(
+  destination: string,
+  fileOps: AtomicFinalizeFileOps,
+): Promise<string> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const backup = siblingPath(destination, "backup");
     try {
-      await link(destination, backup);
+      await fileOps.rename(destination, backup);
       return backup;
     } catch (error) {
       if (!hasErrorCode(error, "EEXIST")) {
@@ -171,10 +197,13 @@ async function createBackup(destination: string): Promise<string> {
   throw new Error("Could not allocate a unique backup file.");
 }
 
-async function removeRollbackObstacle(path: string): Promise<void> {
+async function removeRollbackObstacle(
+  path: string,
+  fileOps: AtomicFinalizeFileOps,
+): Promise<void> {
   let entry;
   try {
-    entry = await lstat(path);
+    entry = await fileOps.lstat(path);
   } catch (error) {
     if (hasErrorCode(error, "ENOENT")) {
       return;
@@ -183,37 +212,26 @@ async function removeRollbackObstacle(path: string): Promise<void> {
   }
 
   if (entry.isDirectory()) {
-    await rmdir(path);
+    await fileOps.rmdir(path);
   } else {
-    await unlink(path);
+    await fileOps.unlink(path);
   }
 }
 
-async function replaceExisting(
+async function replaceExistingOnWindows(
   stagedPath: string,
   destination: string,
+  fileOps: AtomicFinalizeFileOps,
 ): Promise<void> {
-  const backup = await createBackup(destination);
-  let originalRemoved = false;
+  const backup = await moveToBackup(destination, fileOps);
 
   try {
-    await unlink(destination);
-    originalRemoved = true;
-    await rename(stagedPath, destination);
-    await unlink(backup);
+    await fileOps.rename(stagedPath, destination);
+    await fileOps.unlink(backup);
   } catch (error) {
-    if (!originalRemoved) {
-      try {
-        await unlink(backup);
-      } catch {
-        // The original is still at the destination; outer cleanup reports the failure.
-      }
-      throw error;
-    }
-
     try {
-      await removeRollbackObstacle(destination);
-      await rename(backup, destination);
+      await removeRollbackObstacle(destination, fileOps);
+      await fileOps.rename(backup, destination);
     } catch (rollbackError) {
       throw new AggregateError(
         [error, rollbackError],
@@ -225,60 +243,61 @@ async function replaceExisting(
   }
 }
 
-async function installStagedFile(
+export async function finalizeStagedFile(
   stagedPath: string,
   destination: string,
   force: boolean,
+  dependencies: AtomicFinalizeDependencies = nodeFinalizeDependencies,
 ): Promise<void> {
-  let kind = await destinationKind(destination);
-  if (kind === "directory") {
-    throw fileError("Output path is a directory.");
-  }
+  const { fileOps, platform } = dependencies;
 
-  if (!force) {
-    if (kind !== "missing") {
-      throw fileError("Output file already exists.");
+  try {
+    const kind = await destinationKind(destination, fileOps);
+    if (kind === "directory") {
+      throw fileError("Output path is a directory.");
     }
-    try {
-      await link(stagedPath, destination);
-    } catch (error) {
-      if (hasErrorCode(error, "EEXIST")) {
-        throw fileError("Output file already exists.", error);
+
+    if (!force) {
+      if (kind !== "missing") {
+        throw fileError("Output file already exists.");
       }
-      throw error;
-    }
-    try {
-      await unlink(stagedPath);
-    } catch (error) {
       try {
-        await unlink(destination);
-      } catch {
-        // Preserve the original cleanup error.
+        await fileOps.link(stagedPath, destination);
+      } catch (error) {
+        if (hasErrorCode(error, "EEXIST")) {
+          throw fileError("Output file already exists.", error);
+        }
+        throw error;
       }
-      throw error;
-    }
-    return;
-  }
-
-  if (kind === "missing") {
-    try {
-      await rename(stagedPath, destination);
+      try {
+        await fileOps.unlink(stagedPath);
+      } catch (error) {
+        try {
+          await fileOps.unlink(destination);
+        } catch {
+          // Preserve the original cleanup error.
+        }
+        throw error;
+      }
       return;
-    } catch (error) {
-      if (!hasErrorCode(error, "EEXIST") && !hasErrorCode(error, "EPERM")) {
-        throw error;
-      }
-      kind = await destinationKind(destination);
-      if (kind === "missing") {
-        throw error;
-      }
-      if (kind === "directory") {
-        throw fileError("Output path is a directory.", error);
+    }
+
+    if (kind === "missing" || platform !== "win32") {
+      await fileOps.rename(stagedPath, destination);
+      return;
+    }
+
+    await replaceExistingOnWindows(stagedPath, destination, fileOps);
+  } catch (error) {
+    try {
+      await fileOps.unlink(stagedPath);
+    } catch (cleanupError) {
+      if (!hasErrorCode(cleanupError, "ENOENT")) {
+        // Preserve the primary finalization error.
       }
     }
+    throw error;
   }
-
-  await replaceExisting(stagedPath, destination);
 }
 
 async function withStagedFile(
@@ -296,7 +315,7 @@ async function withStagedFile(
     await staged.handle.sync();
     await staged.handle.close();
     handleOpen = false;
-    await installStagedFile(staged.path, destination, force);
+    await finalizeStagedFile(staged.path, destination, force);
     staged = undefined;
     return bytes;
   } catch (error) {

@@ -68,6 +68,36 @@ export interface TranslateCommand {
 
 export type SubtitlesFormat = "srt" | "vtt" | "json";
 
+export interface UpstreamSubtitleTrack {
+  language: string;
+  url: string;
+  translatedLanguage?: string;
+  translatedUrl?: string;
+}
+
+export interface OriginalSubtitleTrack {
+  kind: "original";
+  language: string;
+  url: string;
+}
+
+export interface TranslatedSubtitleTrack {
+  kind: "translated";
+  language: string;
+  url: string;
+  translatedFromLanguage: string;
+}
+
+export type SelectedSubtitleTrack =
+  | OriginalSubtitleTrack
+  | TranslatedSubtitleTrack;
+
+export interface SubtitleCue {
+  text: string;
+  startMs: number;
+  durationMs: number;
+}
+
 export interface SubtitlesCommand {
   kind: "subtitles";
   url: string;

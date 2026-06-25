@@ -215,6 +215,8 @@ The helper reads these optional variables from the process environment:
 
 `.env` files are ignored by git and are not loaded automatically.
 
+In GitHub Actions, the live smoke test also reads repository variables/secrets with the same names. Without these credentials, a direct VOT translation failure from a GitHub-hosted runner is reported as a skipped external live check instead of failing ordinary CI. Set repository variable `VOT_LIVE_SMOKE_REQUIRED=true` together with one of the VOT credentials if you want that external live check to be a hard gate.
+
 ## Exit codes
 
 - `2` invalid arguments

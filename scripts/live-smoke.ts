@@ -1,6 +1,13 @@
-import VOTClient from "@vot.js/node";
+import VOTClient, { VOTWorkerClient } from "@vot.js/node";
 import { getVideoData } from "@vot.js/node/utils/videoData";
 
+import {
+  createVotClient,
+  readRuntimeConfig,
+  votRequestHeaders,
+  type RuntimeConfig,
+} from "../src/config";
+import { AppError } from "../src/contracts";
 import { normalizeVotCues, selectSubtitleTrack, serializeSubtitles } from "../src/subtitles";
 import { requestTranslation } from "../src/translation";
 
@@ -28,8 +35,43 @@ async function assertDownloadable(url: string): Promise<void> {
   }
 }
 
-async function runAttempt(): Promise<void> {
-  const client = new VOTClient();
+export function hasLiveCredentials(config: RuntimeConfig): boolean {
+  return (
+    config.workerHost !== undefined ||
+    config.apiToken !== undefined ||
+    config.yandexCookie !== undefined
+  );
+}
+
+function requiredByEnv(env: Record<string, string | undefined>): boolean {
+  const raw = env.VOT_LIVE_SMOKE_REQUIRED?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+export function shouldSoftSkipLiveSmoke(
+  error: unknown,
+  config: RuntimeConfig,
+  env: Record<string, string | undefined>,
+): boolean {
+  return (
+    env.GITHUB_ACTIONS === "true" &&
+    !requiredByEnv(env) &&
+    !hasLiveCredentials(config) &&
+    error instanceof AppError &&
+    error.code === "translation"
+  );
+}
+
+function safeErrorMessage(error: unknown): string {
+  if (error instanceof AppError) {
+    return `${error.code}: ${error.message}`;
+  }
+  return error instanceof Error ? error.message : "live smoke failed";
+}
+
+async function runAttempt(config: RuntimeConfig): Promise<void> {
+  const client = createVotClient(config, { VOTClient, VOTWorkerClient });
+  const headers = votRequestHeaders(config);
   const videoData = await getVideoData(FIXTURE_URL);
 
   const translation = await requestTranslation(
@@ -40,6 +82,7 @@ async function runAttempt(): Promise<void> {
       timeoutSeconds: TIMEOUT_SECONDS,
       noWait: true,
       livelyVoice: false,
+      ...(headers === undefined ? {} : { headers }),
     },
     {
       client: client as never,
@@ -54,6 +97,7 @@ async function runAttempt(): Promise<void> {
 
   const rawSubtitles = await (client as { getSubtitles(input: unknown): Promise<unknown> }).getSubtitles({
     videoData,
+    ...(headers === undefined ? {} : { headers }),
   });
   const tracks =
     typeof rawSubtitles === "object" &&
@@ -73,22 +117,35 @@ async function runAttempt(): Promise<void> {
   serializeSubtitles(cues, "srt");
 }
 
-let lastError: unknown;
-for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
-  try {
-    await runAttempt();
-    process.exitCode = 0;
-    process.exit();
-  } catch (error) {
-    lastError = error;
-    process.stderr.write(`live smoke attempt ${attempt} failed\n`);
-    if (attempt < ATTEMPTS) {
-      await sleep(5_000);
+export async function main(
+  env: Record<string, string | undefined> = process.env,
+): Promise<number> {
+  const config = readRuntimeConfig(env);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    try {
+      await runAttempt(config);
+      return 0;
+    } catch (error) {
+      lastError = error;
+      process.stderr.write(`live smoke attempt ${attempt} failed\n`);
+      if (attempt < ATTEMPTS) {
+        await sleep(5_000);
+      }
     }
   }
+
+  if (shouldSoftSkipLiveSmoke(lastError, config, env)) {
+    process.stderr.write(
+      "live smoke skipped: GitHub Actions direct VOT translation failed without VOT credentials. Configure VOT_API_TOKEN, VOT_YANDEX_COOKIE, or VOT_WORKER_HOST to make this a hard live gate.\n",
+    );
+    return 0;
+  }
+
+  process.stderr.write(`${safeErrorMessage(lastError)}\n`);
+  return 1;
 }
 
-process.stderr.write(
-  lastError instanceof Error ? `${lastError.message}\n` : "live smoke failed\n",
-);
-process.exitCode = 1;
+if (import.meta.main) {
+  process.exitCode = await main();
+}

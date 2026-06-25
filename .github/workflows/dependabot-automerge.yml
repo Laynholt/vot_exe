@@ -18,11 +18,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_PULL_REQUESTS: ${{ toJson(github.event.workflow_run.pull_requests) }}
         run: |
           set -euo pipefail
 
-          prs_json="$(gh api "/repos/$REPO/actions/runs/$RUN_ID/pulls")"
+          prs_json="$RUN_PULL_REQUESTS"
           pr_count="$(jq 'length' <<<"$prs_json")"
           if [ "$pr_count" != "1" ]; then
             echo "Skipping: CI run is not associated with exactly one pull request."

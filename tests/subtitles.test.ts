@@ -130,7 +130,7 @@ describe("selectSubtitleTrack", () => {
     });
   });
 
-  test("deduplicates repeated translated candidates by kind, language, and URL", () => {
+  test("deduplicates repeated translated candidates from the same source", () => {
     expect(
       selectSubtitleTrack(
         [tracks[0]!, { ...tracks[0]! }],
@@ -141,6 +141,37 @@ describe("selectSubtitleTrack", () => {
       language: "ru",
       url: "https://example.com/translated-en-ru",
       translatedFromLanguage: "en",
+    });
+  });
+
+  test("keeps translated candidates from different source languages ambiguous", () => {
+    const sharedUrl = "https://example.com/shared-translation";
+    const error = expectSubtitleError(() =>
+      selectSubtitleTrack(
+        [
+          { ...tracks[0]!, translatedUrl: sharedUrl },
+          { ...tracks[1]!, translatedUrl: sharedUrl },
+        ],
+        { original: false, sourceLang: "auto", targetLang: "ru" },
+      ),
+    );
+
+    expect(error.message).toContain("ambiguous");
+  });
+
+  test("ignores malformed candidates when a valid equivalent is available", () => {
+    expect(
+      selectSubtitleTrack(
+        [
+          { ...tracks[0]!, url: "file:///private/original" },
+          tracks[0]!,
+        ],
+        { original: true, sourceLang: "en", targetLang: "ru" },
+      ),
+    ).toEqual({
+      kind: "original",
+      language: "en",
+      url: "https://example.com/original-en",
     });
   });
 
@@ -245,15 +276,36 @@ describe("normalizeVotCues", () => {
     ]);
   });
 
-  test("collapses consecutive cue-internal blank lines", () => {
+  test("preserves cue-internal blank lines for JSON but protects SRT and VTT blocks", () => {
     const cues = normalizeVotCues([
-      { text: "line1\n\nline2", startMs: 0, durationMs: 1 },
+      { text: "line1\r\n\rline2", startMs: 0, durationMs: 1 },
     ]);
 
-    expect(cues).toEqual([{ text: "line1\nline2", startMs: 0, durationMs: 1 }]);
-    expect(serializeSubtitles(cues, "srt")).toBe(
-      "1\r\n00:00:00,000 --> 00:00:00,001\r\nline1\r\nline2\r\n",
+    expect(cues).toEqual([
+      { text: "line1\n\nline2", startMs: 0, durationMs: 1 },
+    ]);
+    expect(serializeSubtitles(cues, "json")).toBe(
+      `${JSON.stringify(cues, null, 2)}\n`,
     );
+    expect(serializeSubtitles(cues, "srt")).toBe(
+      "1\r\n00:00:00,000 --> 00:00:00,001\r\nline1\r\n\u00a0\r\nline2\r\n",
+    );
+    expect(serializeSubtitles(cues, "vtt")).toBe(
+      "WEBVTT\r\n\r\n00:00:00.000 --> 00:00:00.001\r\nline1\r\n\u00a0\r\nline2\r\n",
+    );
+  });
+
+  test("preserves finite fractional timing losslessly", () => {
+    const cues = normalizeVotCues([
+      { text: "sub-ms", startMs: 0.25, durationMs: 0.1 },
+      { text: "boundary", startMs: 999.9, durationMs: 0.2 },
+    ]);
+
+    expect(cues).toEqual([
+      { text: "sub-ms", startMs: 0.25, durationMs: 0.1 },
+      { text: "boundary", startMs: 999.9, durationMs: 0.2 },
+    ]);
+    expect(JSON.parse(serializeSubtitles(cues, "json"))).toEqual(cues);
   });
 
   test("rejects payloads containing no nonblank cues", () => {
@@ -279,31 +331,25 @@ describe("normalizeVotCues", () => {
     ["null cue", null],
     ["non-string text", { text: 42, startMs: 0, durationMs: 1 }],
     ["negative start", { text: "x", startMs: -1, durationMs: 1 }],
-    ["fractional start", { text: "x", startMs: 0.5, durationMs: 1 }],
     ["NaN start", { text: "x", startMs: Number.NaN, durationMs: 1 }],
     [
       "infinite start",
       { text: "x", startMs: Number.POSITIVE_INFINITY, durationMs: 1 },
     ],
-    [
-      "unsafe start",
-      { text: "x", startMs: Number.MAX_SAFE_INTEGER + 1, durationMs: 1 },
-    ],
     ["zero duration", { text: "x", startMs: 0, durationMs: 0 }],
     ["negative duration", { text: "x", startMs: 0, durationMs: -1 }],
-    ["fractional duration", { text: "x", startMs: 0, durationMs: 1.5 }],
     ["NaN duration", { text: "x", startMs: 0, durationMs: Number.NaN }],
     [
       "infinite duration",
       { text: "x", startMs: 0, durationMs: Number.NEGATIVE_INFINITY },
     ],
     [
-      "unsafe duration",
-      { text: "x", startMs: 0, durationMs: Number.MAX_SAFE_INTEGER + 1 },
+      "overflowing end",
+      { text: "x", startMs: Number.MAX_VALUE, durationMs: Number.MAX_VALUE },
     ],
     [
-      "overflowing end",
-      { text: "x", startMs: Number.MAX_SAFE_INTEGER, durationMs: 1 },
+      "non-increasing end",
+      { text: "x", startMs: Number.MAX_VALUE, durationMs: Number.MIN_VALUE },
     ],
   ] as const)("rejects %s with its cue index", (_label, invalidCue) => {
     const error = expectSubtitleError(() =>
@@ -318,6 +364,23 @@ describe("normalizeVotCues", () => {
 });
 
 describe("serializeSubtitles", () => {
+  test("uses floor(start) and ceil(end) for fractional and sub-ms cues", () => {
+    const cues = normalizeVotCues([
+      { text: "sub-ms", startMs: 0.25, durationMs: 0.1 },
+      { text: "boundary", startMs: 999.9, durationMs: 0.2 },
+    ]);
+
+    expect(serializeSubtitles(cues, "srt")).toBe(
+      "1\r\n00:00:00,000 --> 00:00:00,001\r\nsub-ms\r\n\r\n" +
+        "2\r\n00:00:00,999 --> 00:00:01,001\r\nboundary\r\n",
+    );
+    expect(serializeSubtitles(cues, "vtt")).toBe(
+      "WEBVTT\r\n\r\n" +
+        "00:00:00.000 --> 00:00:00.001\r\nsub-ms\r\n\r\n" +
+        "00:00:00.999 --> 00:00:01.001\r\nboundary\r\n",
+    );
+  });
+
   test("serializes exact SRT with boundary carry, multiline text, CRLF, and terminal CRLF", () => {
     expect(
       serializeSubtitles(

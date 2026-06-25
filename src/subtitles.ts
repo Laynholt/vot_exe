@@ -35,6 +35,9 @@ function deduplicateCandidates(
     const key = JSON.stringify([
       candidate.kind,
       candidate.language,
+      candidate.kind === "translated"
+        ? candidate.translatedFromLanguage
+        : undefined,
       candidate.url,
     ]);
     if (!unique.has(key)) {
@@ -60,48 +63,57 @@ export function selectSubtitleTrack(
   tracks: readonly UpstreamSubtitleTrack[],
   options: SubtitleSelectionOptions,
 ): SelectedSubtitleTrack {
+  const invalidUrlCandidates: SelectedSubtitleTrack[] = [];
+  const validCandidates: SelectedSubtitleTrack[] = [];
+  for (const candidate of options.original
+    ? tracks
+        .filter(
+          (track) =>
+            options.sourceLang === "auto" ||
+            track.language === options.sourceLang,
+        )
+        .map((track) => ({
+          kind: "original" as const,
+          language: track.language,
+          url: track.url,
+        }))
+    : tracks
+        .filter(
+          (track) =>
+            track.translatedLanguage === options.targetLang &&
+            typeof track.translatedUrl === "string" &&
+            track.translatedUrl.length > 0 &&
+            (options.sourceLang === "auto" ||
+              track.language === options.sourceLang),
+        )
+        .map((track) => ({
+          kind: "translated" as const,
+          language: track.translatedLanguage!,
+          url: track.translatedUrl!,
+          translatedFromLanguage: track.language,
+        }))) {
+    if (isHttpUrl(candidate.url)) {
+      validCandidates.push(candidate);
+    } else {
+      invalidUrlCandidates.push(candidate);
+    }
+  }
+
   const candidates = deduplicateCandidates(
-    options.original
-      ? tracks
-          .filter(
-            (track) =>
-              options.sourceLang === "auto" ||
-              track.language === options.sourceLang,
-          )
-          .map((track) => ({
-            kind: "original" as const,
-            language: track.language,
-            url: track.url,
-          }))
-      : tracks
-          .filter(
-            (track) =>
-              track.translatedLanguage === options.targetLang &&
-              typeof track.translatedUrl === "string" &&
-              track.translatedUrl.length > 0 &&
-              (options.sourceLang === "auto" ||
-                track.language === options.sourceLang),
-          )
-          .map((track) => ({
-            kind: "translated" as const,
-            language: track.translatedLanguage!,
-            url: track.translatedUrl!,
-            translatedFromLanguage: track.language,
-          })),
+    validCandidates,
   );
 
   if (candidates.length === 1) {
-    const candidate = candidates[0]!;
-    if (!isHttpUrl(candidate.url)) {
-      throw new AppError("subtitles", "Selected subtitle URL is invalid.", {
-        details: availableTrackDetails(tracks),
-      });
-    }
-    return candidate;
+    return candidates[0]!;
   }
 
   const details = availableTrackDetails(tracks);
   if (candidates.length === 0) {
+    if (invalidUrlCandidates.length > 0) {
+      throw new AppError("subtitles", "Selected subtitle URL is invalid.", {
+        details,
+      });
+    }
     throw new AppError(
       "subtitles",
       "No subtitle track matched the requested languages.",
@@ -133,7 +145,7 @@ function cueArray(input: unknown): unknown[] {
 }
 
 function normalizeCueText(text: string): string {
-  return text.replace(/\r\n?/g, "\n").replace(/\n(?:[ \t]*\n)+/g, "\n");
+  return text.replace(/\r\n?/g, "\n");
 }
 
 function cueError(message: string, cueIndex: number): AppError {
@@ -158,20 +170,20 @@ export function normalizeVotCues(input: unknown): SubtitleCue[] {
     }
     if (
       typeof cue.startMs !== "number" ||
-      !Number.isSafeInteger(cue.startMs) ||
+      !Number.isFinite(cue.startMs) ||
       cue.startMs < 0
     ) {
       throw cueError("Invalid VOT subtitle cue start time.", originalIndex);
     }
     if (
       typeof cue.durationMs !== "number" ||
-      !Number.isSafeInteger(cue.durationMs) ||
+      !Number.isFinite(cue.durationMs) ||
       cue.durationMs <= 0
     ) {
       throw cueError("Invalid VOT subtitle cue duration.", originalIndex);
     }
     const endMs = cue.startMs + cue.durationMs;
-    if (!Number.isSafeInteger(endMs) || endMs <= cue.startMs) {
+    if (!Number.isFinite(endMs) || endMs <= cue.startMs) {
       throw cueError("Invalid VOT subtitle cue end time.", originalIndex);
     }
 
@@ -208,17 +220,19 @@ export function normalizeVotCues(input: unknown): SubtitleCue[] {
 }
 
 function timestamp(milliseconds: number, separator: "," | "."): string {
-  const rounded = Math.round(milliseconds);
-  const hours = Math.floor(rounded / 3_600_000);
-  const minutes = Math.floor((rounded % 3_600_000) / 60_000);
-  const seconds = Math.floor((rounded % 60_000) / 1_000);
-  const millis = rounded % 1_000;
+  const hours = Math.floor(milliseconds / 3_600_000);
+  const minutes = Math.floor((milliseconds % 3_600_000) / 60_000);
+  const seconds = Math.floor((milliseconds % 60_000) / 1_000);
+  const millis = milliseconds % 1_000;
 
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}${separator}${String(millis).padStart(3, "0")}`;
 }
 
 function cueText(text: string, escapeHtml: boolean): string {
-  const normalized = normalizeCueText(text);
+  const normalized = normalizeCueText(text)
+    .split("\n")
+    .map((line) => (line.length === 0 ? "\u00A0" : line))
+    .join("\n");
   const escaped = escapeHtml
     ? normalized
         .replace(/&/g, "&amp;")
@@ -238,7 +252,9 @@ export function serializeSubtitles(
 
   const separator = format === "srt" ? "," : ".";
   const blocks = cues.map((cue, index) => {
-    const timing = `${timestamp(cue.startMs, separator)} --> ${timestamp(cue.startMs + cue.durationMs, separator)}`;
+    const startMs = Math.floor(cue.startMs);
+    const endMs = Math.max(startMs + 1, Math.ceil(cue.startMs + cue.durationMs));
+    const timing = `${timestamp(startMs, separator)} --> ${timestamp(endMs, separator)}`;
     const text = cueText(cue.text, format === "vtt");
     return format === "srt"
       ? `${index + 1}\r\n${timing}\r\n${text}`

@@ -1,0 +1,43 @@
+name: Retry transient live integration
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  retry-live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retry failed live job when all non-live jobs are healthy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          prs="$(gh pr list --repo "$REPO" --author "app/dependabot" --state open --json number,headRefName)"
+          jq -c '.[]' <<<"$prs" | while read -r pr; do
+            pr_number="$(jq -r '.number' <<<"$pr")"
+            files="$(gh api "/repos/$REPO/pulls/$pr_number/files")"
+            if ! jq -e 'all(.filename == "package.json" or .filename == "bun.lock")' <<<"$files" >/dev/null; then
+              continue
+            fi
+
+            head_sha="$(gh pr view "$pr_number" --repo "$REPO" --json headRefOid --jq '.headRefOid')"
+            run="$(gh run list --repo "$REPO" --workflow CI --commit "$head_sha" --limit 1 --json databaseId,conclusion,status | jq -c '.[0] // empty')"
+            test -n "$run" || continue
+            test "$(jq -r '.conclusion' <<<"$run")" = "failure" || continue
+
+            run_id="$(jq -r '.databaseId' <<<"$run")"
+            jobs="$(gh api "/repos/$REPO/actions/runs/$run_id/jobs")"
+            live_id="$(jq -r '.jobs[] | select(.name == "live-integration") | select(.conclusion == "failure") | .id' <<<"$jobs")"
+            test -n "$live_id" || continue
+            jq -e '[.jobs[] | select(.name != "live-integration") | .conclusion] | all(. == "success" or . == "skipped")' <<<"$jobs" >/dev/null
+            gh api -X POST "/repos/$REPO/actions/jobs/$live_id/rerun"
+          done

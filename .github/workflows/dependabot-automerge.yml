@@ -1,0 +1,62 @@
+name: Dependabot trusted automerge
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Verify dependency-only Dependabot PR and merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+
+          prs_json="$(gh api "/repos/$REPO/actions/runs/$RUN_ID/pulls")"
+          pr_count="$(jq 'length' <<<"$prs_json")"
+          test "$pr_count" = "1"
+
+          pr_number="$(jq -r '.[0].number' <<<"$prs_json")"
+          pr_json="$(gh api "/repos/$REPO/pulls/$pr_number")"
+          test "$(jq -r '.user.login' <<<"$pr_json")" = "dependabot[bot]"
+          test "$(jq -r '.base.ref' <<<"$pr_json")" = "master"
+
+          files_json="$(gh api --paginate "/repos/$REPO/pulls/$pr_number/files")"
+          jq -e 'all(.filename == "package.json" or .filename == "bun.lock")' <<<"$files_json" >/dev/null
+
+          base_sha="$(jq -r '.base.sha' <<<"$pr_json")"
+          head_sha="$(jq -r '.head.sha' <<<"$pr_json")"
+          base_pkg="$(gh api "/repos/$REPO/contents/package.json?ref=$base_sha" --jq '.content' | base64 -d)"
+          head_pkg="$(gh api "/repos/$REPO/contents/package.json?ref=$head_sha" --jq '.content' | base64 -d)"
+
+          BASE_PKG="$base_pkg" HEAD_PKG="$head_pkg" node <<'NODE'
+          const baseRaw = process.env.BASE_PKG;
+          const headRaw = process.env.HEAD_PKG;
+          if (!baseRaw || !headRaw) {
+            throw new Error("missing package.json inputs");
+          }
+          const base = JSON.parse(baseRaw);
+          const head = JSON.parse(headRaw);
+          const before = structuredClone(base);
+          const after = structuredClone(head);
+          delete before.dependencies?.["@vot.js/node"];
+          delete after.dependencies?.["@vot.js/node"];
+          if (JSON.stringify(before) !== JSON.stringify(after)) {
+            throw new Error("package.json changed outside dependencies[@vot.js/node]");
+          }
+          if (base.dependencies?.["@vot.js/node"] === head.dependencies?.["@vot.js/node"]) {
+            throw new Error("@vot.js/node version did not change");
+          }
+          NODE
+
+          gh pr merge "$pr_number" --repo "$REPO" --squash --delete-branch

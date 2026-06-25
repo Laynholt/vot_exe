@@ -24,15 +24,27 @@ jobs:
 
           prs_json="$(gh api "/repos/$REPO/actions/runs/$RUN_ID/pulls")"
           pr_count="$(jq 'length' <<<"$prs_json")"
-          test "$pr_count" = "1"
+          if [ "$pr_count" != "1" ]; then
+            echo "Skipping: CI run is not associated with exactly one pull request."
+            exit 0
+          fi
 
           pr_number="$(jq -r '.[0].number' <<<"$prs_json")"
           pr_json="$(gh api "/repos/$REPO/pulls/$pr_number")"
-          test "$(jq -r '.user.login' <<<"$pr_json")" = "dependabot[bot]"
-          test "$(jq -r '.base.ref' <<<"$pr_json")" = "master"
+          if [ "$(jq -r '.user.login' <<<"$pr_json")" != "dependabot[bot]" ]; then
+            echo "Skipping PR #$pr_number: author is not dependabot[bot]."
+            exit 0
+          fi
+          if [ "$(jq -r '.base.ref' <<<"$pr_json")" != "master" ]; then
+            echo "Skipping PR #$pr_number: base branch is not master."
+            exit 0
+          fi
 
           files_json="$(gh api --paginate "/repos/$REPO/pulls/$pr_number/files")"
-          jq -e 'all(.filename == "package.json" or .filename == "bun.lock")' <<<"$files_json" >/dev/null
+          if ! jq -e 'all(.filename == "package.json" or .filename == "bun.lock")' <<<"$files_json" >/dev/null; then
+            echo "Skipping PR #$pr_number: not an npm package/bun.lock update."
+            exit 0
+          fi
 
           base_sha="$(jq -r '.base.sha' <<<"$pr_json")"
           head_sha="$(jq -r '.head.sha' <<<"$pr_json")"

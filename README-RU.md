@@ -20,6 +20,11 @@ vot-helper.exe subtitles --url https://youtu.be/example --output subtitles.srt
 vot-helper.exe subtitles --url https://youtu.be/example --original --source-lang en --format vtt --output original.vtt
 ```
 
+У EXE две операционные команды:
+
+- `translate` запрашивает у VOT аудиодорожку перевода. По умолчанию — на русский. Если перевод уже есть в upstream cache, команда может завершиться быстро. Если нет — helper будет polling-ом ждать готовности до timeout.
+- `subtitles` запрашивает у VOT metadata дорожек субтитров. Без `--output` команда выводит список доступных дорожек. С `--output` выбирает дорожку, скачивает VOT subtitle JSON, нормализует cues и пишет SRT/VTT/JSON.
+
 Значения по умолчанию:
 
 - язык источника: `auto`
@@ -28,6 +33,177 @@ vot-helper.exe subtitles --url https://youtu.be/example --original --source-lang
 - формат субтитров: `srt`
 
 Операционные команды пишут один JSON-результат в stdout. Help и version печатают обычный текст. Диагностика и ошибки пишутся в stderr.
+
+## Справочник флагов
+
+Глобальные формы:
+
+```powershell
+vot-helper.exe --help
+vot-helper.exe --version
+vot-helper.exe translate --help
+vot-helper.exe subtitles --help
+```
+
+Флаги `translate`:
+
+| Флаг | Значение | По умолчанию | Назначение |
+| --- | --- | --- | --- |
+| `--url` | HTTP(S) URL | обязателен | URL видео, который поддерживается upstream VOT helpers. |
+| `--source-lang` | код языка | `auto` | Язык источника для VOT. Используйте явный `en`, если auto-выбор неоднозначен. |
+| `--target-lang` | код языка | `ru` | Целевой язык перевода. |
+| `--timeout` | положительное число секунд | `900` | Максимальное время ожидания, если перевод ещё не готов. |
+| `--no-wait` | нет | `false` | Вернуть pending после первого ответа VOT, без polling. |
+| `--lively-voice` | нет | `false` | Запросить lively voice. Требует `VOT_API_TOKEN` или `VOT_YANDEX_COOKIE`. |
+| `--output` | путь | нет | Скачать аудио перевода в файл. Без флага JSON содержит временный audio URL. |
+| `--force` | нет | `false` | Атомарно перезаписать существующий output-файл. |
+| `--quiet` | нет | `false` | Зарезервировано для подавления не-error progress logs. |
+
+Флаги `subtitles`:
+
+| Флаг | Значение | По умолчанию | Назначение |
+| --- | --- | --- | --- |
+| `--url` | HTTP(S) URL | обязателен | URL видео, который поддерживается upstream VOT helpers. |
+| `--source-lang` | код языка | `auto` | Исходный язык субтитров. Указывайте явно, если VOT отдаёт несколько source-дорожек для одного target. |
+| `--target-lang` | код языка | `ru` | Целевой язык переведённых субтитров. |
+| `--format` | `srt`, `vtt`, `json` | `srt` | Формат выходных субтитров. |
+| `--original` | нет | `false` | Выбрать оригинальные субтитры вместо переведённых. |
+| `--output` | путь | нет | Записать выбранные субтитры. Без флага команда выводит metadata доступных дорожек. |
+| `--force` | нет | `false` | Атомарно перезаписать существующий output-файл. |
+| `--quiet` | нет | `false` | Зарезервировано для подавления не-error progress logs. |
+
+## JSON contract для интеграций
+
+Операционные команды всегда пишут ровно один JSON object и newline в stdout. Stderr предназначен для human-readable диагностики и не должен парситься как данные.
+
+Успешный envelope:
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "operation": "translate",
+  "helperVersion": "0.1.0",
+  "votVersion": "2.4.12",
+  "data": {}
+}
+```
+
+Error envelope:
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "operation": "subtitles",
+  "helperVersion": "0.1.0",
+  "votVersion": "2.4.12",
+  "error": {
+    "code": "subtitles",
+    "message": "Subtitle track selection is ambiguous.",
+    "details": {}
+  }
+}
+```
+
+Типичный `translate` success без `--output`:
+
+```json
+{
+  "state": "ready",
+  "translationId": "355844302",
+  "audioUrl": "https://...",
+  "status": 1
+}
+```
+
+Типичный `translate` success с `--output` добавляет:
+
+```json
+{
+  "output": {
+    "path": "C:\\absolute\\audio.mp3",
+    "bytes": 12963466,
+    "contentType": "audio/mpeg"
+  }
+}
+```
+
+Типичный pending response с `--no-wait`:
+
+```json
+{
+  "state": "pending",
+  "translationId": "tr-pending",
+  "remainingTimeSeconds": 30,
+  "status": 2
+}
+```
+
+Типичный `subtitles` listing:
+
+```json
+{
+  "waiting": false,
+  "tracks": [
+    { "language": "en", "translatedLanguage": "ru" }
+  ]
+}
+```
+
+Типичный `subtitles` export:
+
+```json
+{
+  "waiting": false,
+  "selectedTrack": {
+    "kind": "translated",
+    "language": "ru",
+    "translatedFromLanguage": "en",
+    "url": "https://..."
+  },
+  "output": {
+    "path": "C:\\absolute\\subtitles.srt",
+    "bytes": 31093
+  }
+}
+```
+
+Для приватности и стабильности metadata ошибок выбора намеренно не содержит raw signed subtitle/audio URL.
+
+## Pattern интеграции как subprocess
+
+Рекомендуемый flow для другого приложения:
+
+1. Поставить или скачать `vot-helper.exe`.
+2. Запустить его как child process.
+3. Передавать secrets только через environment variables.
+4. Для операционных команд парсить stdout как один JSON line.
+5. Любой non-zero exit code считать ошибкой и смотреть `error.code`.
+6. Stderr использовать только для логов человеку.
+
+Пример псевдокода:
+
+```ts
+const child = spawn("vot-helper.exe", [
+  "translate",
+  "--url", videoUrl,
+  "--target-lang", "ru",
+  "--output", outputPath,
+  "--force",
+], {
+  env: {
+    ...process.env,
+    VOT_WORKER_HOST: "",
+    VOT_API_TOKEN: token,
+  },
+});
+
+const result = JSON.parse(await readAll(child.stdout));
+if (!result.ok) throw new Error(result.error.message);
+```
+
+Запись файлов атомарная: helper пишет в соседний временный файл и переименовывает его в целевой путь только после успешной записи. Существующие output-файлы не перезаписываются без `--force`.
 
 ## Environment
 

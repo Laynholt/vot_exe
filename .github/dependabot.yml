@@ -12,13 +12,3 @@ updates:
       - dependency-name: "@vot.js/node"
         dependency-type: direct
     versioning-strategy: increase
-
-  - package-ecosystem: github-actions
-    directory: /
-    target-branch: master
-    schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: UTC
-    open-pull-requests-limit: 5

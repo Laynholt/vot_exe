@@ -11,7 +11,7 @@ import {
 
 const context = {
   operation: "translate",
-  helperVersion: "0.1.0",
+  helperVersion: "2.4.12-R2",
   votVersion: "2.4.12",
 };
 
@@ -26,7 +26,7 @@ describe("result envelopes", () => {
       schemaVersion: 1,
       ok: true,
       operation: "translate",
-      helperVersion: "0.1.0",
+      helperVersion: "2.4.12-R2",
       votVersion: "2.4.12",
       data: { output: "voice.mp3" },
     });
@@ -80,7 +80,7 @@ describe("result envelopes", () => {
         schemaVersion: 1,
         ok: false,
         operation: "translate",
-        helperVersion: "0.1.0",
+        helperVersion: "2.4.12-R2",
         votVersion: "2.4.12",
         error: {
           code: "translation",
@@ -105,7 +105,7 @@ describe("result envelopes", () => {
         schemaVersion: 1,
         ok: false,
         operation: "translate",
-        helperVersion: "0.1.0",
+        helperVersion: "2.4.12-R2",
         votVersion: "2.4.12",
         error: {
           code: "unexpected",
@@ -123,7 +123,7 @@ describe("result envelopes", () => {
 
     expect(
       normalizeError(thrown, {
-        helperVersion: "0.1.0",
+        helperVersion: "2.4.12-R2",
         votVersion: "2.4.12",
       }),
     ).toEqual({
@@ -131,7 +131,7 @@ describe("result envelopes", () => {
       envelope: {
         schemaVersion: 1,
         ok: false,
-        helperVersion: "0.1.0",
+        helperVersion: "2.4.12-R2",
         votVersion: "2.4.12",
         error: {
           code: "unexpected",
@@ -151,7 +151,7 @@ describe("result envelopes", () => {
       schemaVersion: 1,
       ok: false,
       operation: "translate",
-      helperVersion: "0.1.0",
+      helperVersion: "2.4.12-R2",
       votVersion: "2.4.12",
       error: {
         code: "timeout",
@@ -166,7 +166,7 @@ describe("result envelopes", () => {
       data: { first: 1, second: true },
     });
     const expected =
-      '{"schemaVersion":1,"ok":true,"operation":"translate","helperVersion":"0.1.0","votVersion":"2.4.12","data":{"first":1,"second":true}}\n';
+      '{"schemaVersion":1,"ok":true,"operation":"translate","helperVersion":"2.4.12-R2","votVersion":"2.4.12","data":{"first":1,"second":true}}\n';
 
     expect(serializeEnvelope(envelope)).toBe(expected);
     expect(serializeEnvelope(envelope)).toBe(expected);

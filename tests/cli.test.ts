@@ -6,7 +6,10 @@ interface RunResult {
   stderr: string;
 }
 
-async function runCli(args: string[]): Promise<RunResult> {
+async function runCli(
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<RunResult> {
   const proc = Bun.spawn([process.execPath, "src/vot-helper.ts", ...args], {
     stdout: "pipe",
     stderr: "pipe",
@@ -15,6 +18,7 @@ async function runCli(args: string[]): Promise<RunResult> {
       VOT_WORKER_HOST: "",
       VOT_API_TOKEN: "",
       VOT_YANDEX_COOKIE: "",
+      ...env,
     },
   });
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -46,7 +50,18 @@ describe("vot-helper process contract", () => {
     const result = await runCli(["--version"]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("vot-helper 0.1.0");
+    expect(result.stdout).toContain("vot-helper development");
+    expect(result.stdout).toContain("@vot.js/node 2.4.12");
+    expect(result.stderr).toBe("");
+  });
+
+  test("prints the GitHub release version when provided", async () => {
+    const result = await runCli(["--version"], {
+      VOT_HELPER_RELEASE: "vot-2.4.12-r2",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("vot-helper 2.4.12-R2");
     expect(result.stdout).toContain("@vot.js/node 2.4.12");
     expect(result.stderr).toBe("");
   });
@@ -61,7 +76,7 @@ describe("vot-helper process contract", () => {
       schemaVersion: 1,
       ok: false,
       operation: "arguments",
-      helperVersion: "0.1.0",
+      helperVersion: "development",
       votVersion: "2.4.12",
       error: {
         code: "invalidArguments",

@@ -83,7 +83,7 @@ Successful envelope:
   "schemaVersion": 1,
   "ok": true,
   "operation": "translate",
-  "helperVersion": "0.1.0",
+  "helperVersion": "2.4.12-R2",
   "votVersion": "2.4.12",
   "data": {}
 }
@@ -96,7 +96,7 @@ Error envelope:
   "schemaVersion": 1,
   "ok": false,
   "operation": "subtitles",
-  "helperVersion": "0.1.0",
+  "helperVersion": "2.4.12-R2",
   "votVersion": "2.4.12",
   "error": {
     "code": "subtitles",

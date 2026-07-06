@@ -12,7 +12,22 @@ import {
 import { AppError, ArgumentError, type ParsedCommand } from "./contracts";
 import { normalizeError, serializeEnvelope } from "./result";
 
-const HELPER_VERSION = packageJson.version;
+declare const VOT_HELPER_RELEASE: string | undefined;
+
+function displayHelperVersion(release: string | undefined): string {
+  const match = /^vot-(\d+\.\d+\.\d+)-r(\d+)$/.exec(release ?? "");
+  if (match) {
+    return `${match[1]}-R${match[2]}`;
+  }
+  return release ?? "development";
+}
+
+const HELPER_VERSION =
+  displayHelperVersion(
+    typeof VOT_HELPER_RELEASE === "string"
+      ? VOT_HELPER_RELEASE
+      : process.env.VOT_HELPER_RELEASE,
+  );
 const VOT_VERSION = packageJson.dependencies["@vot.js/node"];
 
 function diagnostic(message: string): void {

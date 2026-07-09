@@ -9,6 +9,7 @@ on:
       - "scripts/**"
       - "package.json"
       - "bun.lock"
+      - "LICENSE"
       - ".github/workflows/release.yml"
   workflow_dispatch:
 
@@ -74,7 +75,11 @@ jobs:
       - name: Package release assets
         shell: pwsh
         run: |
-          Compress-Archive -Path .\dist\vot-helper.exe -DestinationPath .\dist\vot-helper-windows-x64.zip -Force
+          Compress-Archive -Path .\dist\vot-helper.exe, .\LICENSE -DestinationPath .\dist\vot-helper-windows-x64.zip -Force
+          $zipEntries = (tar -tf .\dist\vot-helper-windows-x64.zip) -join "`n"
+          if ($zipEntries -notmatch "(?m)^vot-helper\.exe$" -or $zipEntries -notmatch "(?m)^LICENSE$") {
+            throw "Release zip must contain vot-helper.exe and LICENSE at the archive root."
+          }
           $exeHash = (Get-FileHash .\dist\vot-helper.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           $zipHash = (Get-FileHash .\dist\vot-helper-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$exeHash  vot-helper.exe" | Set-Content -Path .\dist\SHA256SUMS.txt -NoNewline

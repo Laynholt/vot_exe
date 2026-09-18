@@ -51,7 +51,7 @@ describe("vot-helper process contract", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("vot-helper development");
-    expect(result.stdout).toContain("@vot.js/node 2.4.12");
+    expect(result.stdout).toContain("@vot.js/node 2.4.20");
     expect(result.stderr).toBe("");
   });
 
@@ -62,7 +62,7 @@ describe("vot-helper process contract", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("vot-helper 2.4.12-R2");
-    expect(result.stdout).toContain("@vot.js/node 2.4.12");
+    expect(result.stdout).toContain("@vot.js/node 2.4.20");
     expect(result.stderr).toBe("");
   });
 
@@ -77,7 +77,7 @@ describe("vot-helper process contract", () => {
       ok: false,
       operation: "arguments",
       helperVersion: "development",
-      votVersion: "2.4.12",
+      votVersion: "2.4.20",
       error: {
         code: "invalidArguments",
         message: "Unknown command: wat.",

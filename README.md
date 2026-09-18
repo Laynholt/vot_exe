@@ -2,7 +2,7 @@
 
 Standalone Windows x64 CLI for VOT audio translation and timed subtitle export.
 
-This project builds an unofficial helper executable around the pinned npm package `@vot.js/node` `2.4.12`. Users do not need Node.js or Bun when using the published `vot-helper.exe`.
+This project builds an unofficial helper executable around the pinned npm package `@vot.js/node` `2.4.20`. Users do not need Node.js or Bun when using the published `vot-helper.exe`.
 
 ## Download and verification
 
@@ -83,8 +83,8 @@ Successful envelope:
   "schemaVersion": 1,
   "ok": true,
   "operation": "translate",
-  "helperVersion": "2.4.12-R2",
-  "votVersion": "2.4.12",
+  "helperVersion": "2.4.20-R2",
+  "votVersion": "2.4.20",
   "data": {}
 }
 ```
@@ -96,8 +96,8 @@ Error envelope:
   "schemaVersion": 1,
   "ok": false,
   "operation": "subtitles",
-  "helperVersion": "2.4.12-R2",
-  "votVersion": "2.4.12",
+  "helperVersion": "2.4.20-R2",
+  "votVersion": "2.4.20",
   "error": {
     "code": "subtitles",
     "message": "Subtitle track selection is ambiguous.",
